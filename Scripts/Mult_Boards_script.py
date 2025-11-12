@@ -5,7 +5,6 @@ import re
 from pathlib import Path
 
 # --- CONFIG ---
-# Automatically detect the boards directory
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 POSSIBLE_BOARD_FOLDERS = ["Emd _Boards", "Emd_Boards", "boards"]
 BOARDS_DIR = None
@@ -19,19 +18,23 @@ for name in POSSIBLE_BOARD_FOLDERS:
 if not BOARDS_DIR:
     raise FileNotFoundError(" Could not find any boards directory (e.g. 'Emd _Boards').")
 
-# Regex to detect the SW_BUILD_VERSION line
 DEFINE_RE = re.compile(r'(#define\s+SW_BUILD_VERSION\s+)".*"')
 
-def get_git_version():
-    """Return git short hash and formatted date"""
+def get_git_version_for_board(board_dir):
+    """Return the latest git hash + date for that specific board directory"""
     try:
         commit = subprocess.check_output(
-            ["git", "rev-parse", "--short", "HEAD"], text=True
-        ).strip()
-        date = subprocess.check_output(
-            ["git", "show", "-s", "--format=%ad", "--date=format:%d.%m.%Y", "HEAD"],
+            ["git", "log", "-1", "--format=%h", "--", str(board_dir)],
             text=True
         ).strip()
+        date = subprocess.check_output(
+            ["git", "log", "-1", "--date=format:%d.%m.%Y", "--format=%ad", "--", str(board_dir)],
+            text=True
+        ).strip()
+
+        if not commit or not date:
+            return "UNKNOWN.01.01.1970"
+
         return f"{commit}.{date}"
     except subprocess.CalledProcessError:
         return "UNKNOWN.01.01.1970"
@@ -39,14 +42,13 @@ def get_git_version():
 def update_header_file(header_file, version):
     """Replace or insert SW_BUILD_VERSION define"""
     guard = os.path.basename(header_file).replace('.', '_').upper()
-    content = ""
-    new_content = ""
 
     if os.path.exists(header_file):
         content = open(header_file, "r").read()
         new_content, count = DEFINE_RE.subn(r'\1"' + version + '"', content)
+
         if count == 0:
-            # Add define before #endif
+            # Insert define before #endif if not present
             if "#endif" in content:
                 new_content = content.replace(
                     "#endif",
@@ -55,7 +57,7 @@ def update_header_file(header_file, version):
             else:
                 new_content = content + f'\n#define SW_BUILD_VERSION "{version}"\n'
     else:
-        # Create new file if not found
+        # Create new file if missing
         new_content = (
             f"#ifndef {guard}\n"
             f"#define {guard}\n\n"
@@ -68,22 +70,18 @@ def update_header_file(header_file, version):
         f.write(new_content)
 
 def main():
-    version = get_git_version()
-    print(f"🔍 Detected version: {version}\n")
+    print(f"🧩 Scanning boards under: {BOARDS_DIR}\n")
 
-    headers_updated = []
     for board_dir in BOARDS_DIR.iterdir():
         if board_dir.is_dir():
+            version = get_git_version_for_board(board_dir)
+            print(f"{board_dir.name}: {version}")
+
             for header in board_dir.glob("*.h"):
                 update_header_file(header, version)
-                headers_updated.append(header)
+                print(f"   → Updated {header.name}")
 
-    if headers_updated:
-        print(" Updated version in the following headers:")
-        for h in headers_updated:
-            print(f"   → {h}")
-    else:
-        print(" No header files found in:", BOARDS_DIR)
+    print("\nAll board headers updated with their individual commit versions.")
 
 if __name__ == "__main__":
     main()
